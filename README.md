@@ -1,8 +1,8 @@
 # Pre-zerolog (prezerolog)
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/renegadevi/prezerolog.svg)](https://pkg.go.dev/github.com/renegadevi/prezerolog)
-[![License](https://img.shields.io/github/license/renegadevi/prezerolog)](https://img.shields.io/github/license/renegadevi/prezerolog)
-[![Release](https://img.shields.io/github/v/release/renegadevi/prezerolog)](https://img.shields.io/github/v/release/renegadevi/prezerolog)
+[![License](https://img.shields.io/github/license/renegadevi/prezerolog)](https://github.com/renegadevi/prezerolog/blob/main/LICENSE)
+[![Release](https://img.shields.io/github/v/release/renegadevi/prezerolog)](https://github.com/renegadevi/prezerolog/releases)
 
 
 
