@@ -11,7 +11,7 @@ A logging wrapper around [zerolog](https://github.com/rs/zerolog) with:
 ## Install
 ```bash
 go get github.com/renegadevi/prezerolog@v0.1.0
-
+```
 
 ## Quick start
 ```go
