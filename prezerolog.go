@@ -158,7 +158,8 @@ func configureZerolog(rotator *RotatingLogger, env string, debugMode bool) {
 	// Build base logger (optional sampling)
 	logger := zerolog.New(multi)
 	if n := getEnvInt("LOG_SAMPLING_N", 1); n > 1 {
-		logger = logger.Sample(&zerolog.BasicSampler{N: n})
+		// zerolog v1.34.0 expects uint32 for N
+		logger = logger.Sample(&zerolog.BasicSampler{N: uint32(n)})
 	}
 
 	// Base fields
