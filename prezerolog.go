@@ -162,7 +162,7 @@ func configureZerolog(rotator *RotatingLogger, env string, debugMode bool) {
 		logger = logger.Sample(&zerolog.BasicSampler{N: uint32(n)})
 	}
 
-	// Base fields
+	// Base fields (NOTE: no caller here; we set caller per-event)
 	service := getEnv("SERVICE_NAME", defaultServiceName())
 	envVal := env
 
@@ -172,7 +172,6 @@ func configureZerolog(rotator *RotatingLogger, env string, debugMode bool) {
 		Timestamp().
 		Str("service", service).
 		Str("env", envVal).
-		CallerWithSkipFrameCount(4).
 		Logger()
 }
 
@@ -222,33 +221,25 @@ func (l *Logger) Error(args ...interface{}) { l.logEvent(zerolog.ErrorLevel, arg
 func (l *Logger) Debug(args ...interface{}) { l.logEvent(zerolog.DebugLevel, args...) }
 
 // Context-aware variants (attach request/trace/span IDs if present).
-func (l *Logger) InfoCtx(ctx context.Context, args ...interface{}) {
-	l.logEventCtx(ctx, zerolog.InfoLevel, args...)
-}
-func (l *Logger) WarnCtx(ctx context.Context, args ...interface{}) {
-	l.logEventCtx(ctx, zerolog.WarnLevel, args...)
-}
-func (l *Logger) ErrorCtx(ctx context.Context, args ...interface{}) {
-	l.logEventCtx(ctx, zerolog.ErrorLevel, args...)
-}
-func (l *Logger) DebugCtx(ctx context.Context, args ...interface{}) {
-	l.logEventCtx(ctx, zerolog.DebugLevel, args...)
-}
+func (l *Logger) InfoCtx(ctx context.Context, args ...interface{})  { l.logEventCtx(ctx, zerolog.InfoLevel, args...) }
+func (l *Logger) WarnCtx(ctx context.Context, args ...interface{})  { l.logEventCtx(ctx, zerolog.WarnLevel, args...) }
+func (l *Logger) ErrorCtx(ctx context.Context, args ...interface{}) { l.logEventCtx(ctx, zerolog.ErrorLevel, args...) }
+func (l *Logger) DebugCtx(ctx context.Context, args ...interface{}) { l.logEventCtx(ctx, zerolog.DebugLevel, args...) }
 
 // Fatal logs an error, includes a stack trace in development, and exits.
 // Pass FatalError{Message, Code} to control message and exit code.
 func (l *Logger) Fatal(args ...interface{}) {
-	_, file, line, _ := runtime.Caller(1)
-
 	message, fields, errVal := processLogArgs(args)
 
 	if l.consoleOut {
 		fields["stack"] = string(debug.Stack())
 	}
 
-	ev := log.Logger.Fatal().
-		Str("caller", fmt.Sprintf("%s:%d", filepath.Base(file), line)).
-		Fields(fields)
+	ev := log.Logger.Fatal()
+	if c := userCaller(); c != "" {
+		ev = ev.Str("caller", c)
+	}
+	ev = ev.Fields(fields)
 	if errVal != nil {
 		ev = ev.Err(errVal)
 	}
@@ -272,8 +263,10 @@ func (l *Logger) Fatal(args ...interface{}) {
 // ---------- Internals ----------
 
 func (l *Logger) logEvent(level zerolog.Level, args ...interface{}) {
-	// Ensure caller points to user site; skip wrapper levels.
-	ev := log.WithLevel(level).Caller(3)
+	ev := log.WithLevel(level)
+	if c := userCaller(); c != "" {
+		ev = ev.Str("caller", c)
+	}
 
 	message, fields, errVal := processLogArgs(args)
 	for k, v := range fields {
@@ -304,7 +297,10 @@ func (l *Logger) logEventCtx(ctx context.Context, level zerolog.Level, args ...i
 	}
 	child := e.Logger()
 
-	ev := child.WithLevel(level).Caller(3)
+	ev := child.WithLevel(level)
+	if c := userCaller(); c != "" {
+		ev = ev.Str("caller", c)
+	}
 
 	message, fields, errVal := processLogArgs(args)
 	for k, v := range fields {
@@ -379,6 +375,37 @@ func mergeStruct(target map[string]interface{}, obj interface{}) {
 		}
 		target[f.Name] = rv.Field(i).Interface()
 	}
+}
+
+// ---------- Caller helpers ----------
+
+// userCaller returns "file.go:line" for the first stack frame outside this package.
+func userCaller() string {
+	// Walk a reasonable number of frames upward
+	for i := 2; i < 30; i++ {
+		pc, file, line, ok := runtime.Caller(i)
+		if !ok {
+			break
+		}
+		if !isThisPackageFrame(pc, file) {
+			return fmt.Sprintf("%s:%d", filepath.Base(file), line)
+		}
+	}
+	return ""
+}
+
+func isThisPackageFrame(pc uintptr, file string) bool {
+	// Check by function name (most robust across module paths)
+	if f := runtime.FuncForPC(pc); f != nil {
+		name := strings.ToLower(f.Name())
+		// e.g., "github.com/renegadevi/prezerolog.(*Logger).Info"
+		if strings.Contains(name, "/prezerolog.") || strings.Contains(name, ".prezerolog.") {
+			return true
+		}
+	}
+	// Fallback: check file path
+	p := strings.ToLower(filepath.ToSlash(file))
+	return strings.Contains(p, "/prezerolog/")
 }
 
 // ---------- Package-level shortcuts ----------
