@@ -7,7 +7,7 @@
 // - RFC3339Nano timestamps, forced UTC
 // - Context-aware correlation IDs (trace_id, span_id, request_id)
 // - Handles string (message), error, map[string]any, and struct args
-// - Fatal logs with stack in dev and configurable exit code
+// - Fatal logs with stack in dev and app-defined exit code (default 1)
 // - Optional sampling via LOG_SAMPLING_N (1 = no sampling)
 //
 // License: MIT - 2025 Philip Andersen
@@ -31,19 +31,6 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"gopkg.in/natefinch/lumberjack.v2"
-)
-
-// ---------- Exit codes ----------
-
-const (
-	ExitSuccess           = 0  // No error
-	ExitGeneral           = 1  // Catch-all for unspecified errors
-	ExitFileNotFound      = 2  // ENOENT equivalent
-	ExitInvalidInput      = 3  // EINVAL equivalent
-	ExitIOFailure         = 4  // General I/O error
-	ExitIconDecodeFailure = 50 // Invalid icon format
-	ExitConfigParseError  = 51 // Bad config file
-	ExitAuthFailure       = 52 // Authentication issues
 )
 
 // ---------- Public types ----------
@@ -227,7 +214,7 @@ func (l *Logger) ErrorCtx(ctx context.Context, args ...interface{}) { l.logEvent
 func (l *Logger) DebugCtx(ctx context.Context, args ...interface{}) { l.logEventCtx(ctx, zerolog.DebugLevel, args...) }
 
 // Fatal logs an error, includes a stack trace in development, and exits.
-// Pass FatalError{Message, Code} to control message and exit code.
+// pass FatalError{Code:N} in args; otherwise defaults to 1.
 func (l *Logger) Fatal(args ...interface{}) {
 	message, fields, errVal := processLogArgs(args)
 
@@ -250,7 +237,8 @@ func (l *Logger) Fatal(args ...interface{}) {
 		ev.Send()
 	}
 
-	code := ExitGeneral
+	// Default to generic failure unless caller specified a code
+	code := 1
 	for _, a := range args {
 		if fe, ok := a.(FatalError); ok && fe.Code != 0 {
 			code = fe.Code
@@ -258,6 +246,12 @@ func (l *Logger) Fatal(args ...interface{}) {
 		}
 	}
 	os.Exit(code)
+}
+
+// FatalCode is a convenience to exit with a specific code.
+func FatalCode(code int, args ...interface{}) {
+	args = append(args, FatalError{Code: code})
+	ensure().Fatal(args...)
 }
 
 // ---------- Internals ----------

@@ -127,6 +127,14 @@ LOG_ROTATE_MAX_BACKUPS=7
 LOG_SAMPLING_N=1
 ```
 
+## Example of Fatal error messages.
+```go
+// Generic failure (defaults to 1)
+log.Fatal("unrecoverable error", err)
+
+// Specific exit code (sysexits-style, etc.)
+log.FatalCode(78, "config load failed", err)
+```
 
 
 ## License
