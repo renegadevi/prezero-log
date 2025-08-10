@@ -8,6 +8,11 @@ A logging wrapper around [zerolog](https://github.com/rs/zerolog) with:
 - Context-aware correlation IDs
 - Minimal API for consistency across services
 
+## Screenshot
+
+![screenshot](https://raw.githubusercontent.com/renegadevi/prezerolog/main/.github/screenshot.png)
+
+
 ## Install
 ```bash
 go get github.com/renegadevi/prezerolog@v0.1.0
