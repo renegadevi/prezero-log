@@ -1,5 +1,13 @@
 # Pre-zerolog (prezerolog)
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/renegadevi/prezerolog.svg)](https://pkg.go.dev/github.com/renegadevi/prezerolog)
+[![License](https://img.shields.io/github/license/renegadevi/prezerolog)](https://img.shields.io/github/license/renegadevi/prezerolog)
+[![Release](https://img.shields.io/github/v/release/renegadevi/prezerolog)](https://img.shields.io/github/v/release/renegadevi/prezerolog)
+
+
+
+
+
 A logging wrapper around [zerolog](https://github.com/rs/zerolog) with:
 - JSON logs to rotated files
 - Colored console output in development/DEBUG
