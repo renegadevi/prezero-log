@@ -11,6 +11,19 @@
 // - Optional sampling via LOG_SAMPLING_N (1 = no sampling)
 //
 // License: MIT - 2025 Philip Andersen
+//
+// Env keys:
+// LOG_DIR=<folder name>		           		(default: "logs")
+// LOG_NAME=<service name> 		           		(default: current dir)
+// LOG_ENV=production|development          		(default: production)
+// LOG_CONSOLE=true|false                  		(default: true)
+// LOG_CONSOLE_LEVEL=trace|debug|info|warn 		(default: info)
+// LOG_FILE_LEVEL=trace|debug|info|warn    		(default: info)
+// LOG_CONSOLE_OUTPUT=minimal|full|extended		(default: full)
+// LOG_SAMPLING_N=1                        		(default: 1)
+// LOG_ROTATE_MAX_SIZE=100                 		(default: 100)
+// LOG_ROTATE_MAX_BACKUPS=7                		(default: 7)
+
 package prezerolog
 
 import (
@@ -34,7 +47,6 @@ import (
 )
 
 // ---------- Public types ----------
-
 type Logger struct {
 	rotator    *RotatingLogger
 	consoleOut bool
@@ -43,9 +55,6 @@ type Logger struct {
 
 type RotatingLogger struct {
 	*lumberjack.Logger
-	baseName string
-	index    int
-	mu       sync.Mutex
 }
 
 type FatalError struct {
@@ -70,29 +79,34 @@ var AppLogger *Logger
 func InitLogging() {
 	_ = godotenv.Load() // ok if missing
 
-	// Env config
 	logDir := getEnv("LOG_DIR", "logs")
-	debugMode := getEnv("DEBUG", "false") == "true"
-	env := getEnv("APP_ENV", "production")
+	logEnv := getEnv("LOG_ENV", getEnv("APP_ENV", "production"))
+	consoleEnabled := getEnvBool("LOG_CONSOLE", true)
+
+	consoleLevel := parseLevel(getEnv("LOG_CONSOLE_LEVEL", "info"))
+	if consoleLevel == zerolog.NoLevel {
+		consoleLevel = zerolog.InfoLevel
+	}
+	fileLevel := parseLevel(getEnv("LOG_FILE_LEVEL", "info"))
+	if fileLevel == zerolog.NoLevel {
+		fileLevel = zerolog.InfoLevel
+	}
 
 	rotator := NewRotatingLogger(logDir)
-	configureZerolog(rotator, env, debugMode)
+	configureZerolog(rotator, logEnv, consoleEnabled, consoleLevel, fileLevel)
 
 	AppLogger = &Logger{
 		rotator:    rotator,
-		consoleOut: env == "development" || debugMode,
+		consoleOut: consoleEnabled,
 	}
 }
 
 func NewRotatingLogger(logDir string) *RotatingLogger {
-	// Use SERVICE_NAME (fallback to binary name) for file prefix
-	service := getEnv("SERVICE_NAME", defaultServiceName())
+	service := getEnv("LOG_NAME", defaultServiceName())
 	serviceSafe := sanitizeServiceName(service)
-
 	baseName := fmt.Sprintf("%s_%s", serviceSafe, time.Now().Format("2006-01-02T15-04-05"))
 
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
-		// Logging may not be configured yet; fail fast.
 		panic(fmt.Errorf("failed to create log directory %q: %w", logDir, err))
 	}
 
@@ -103,11 +117,11 @@ func NewRotatingLogger(logDir string) *RotatingLogger {
 			MaxBackups: getEnvInt("LOG_ROTATE_MAX_BACKUPS", 7),
 			Compress:   true,
 		},
-		baseName: baseName,
 	}
 }
 
-func configureZerolog(rotator *RotatingLogger, env string, debugMode bool) {
+// configureZerolog builds the base logger with JSON-to-file and optional pretty console.
+func configureZerolog(rotator *RotatingLogger, logEnv string, consoleEnabled bool, consoleLevel, fileLevel zerolog.Level) {
 	// Normalize keys and time
 	zerolog.TimestampFieldName = "time"
 	zerolog.LevelFieldName = "level"
@@ -121,70 +135,108 @@ func configureZerolog(rotator *RotatingLogger, env string, debugMode bool) {
 		return fmt.Sprintf("%s:%d", filepath.Base(file), line)
 	}
 
-	// Level
-	logLevel := zerolog.InfoLevel
-	if debugMode {
-		logLevel = zerolog.DebugLevel
-	}
+	service := getEnv("LOG_NAME", defaultServiceName())
 
-	// File writer (always JSON)
-	writers := []io.Writer{rotator}
+	// JSON file destination (always included)
+	fileDest := levelDest{w: rotator, min: fileLevel}
 
-	// Console writer (pretty/color in dev or DEBUG)
-	if env == "development" || debugMode {
-		consoleWriter := zerolog.ConsoleWriter{
+	// Optional console destination
+	var consoleDest *levelDest
+	if consoleEnabled {
+		cw := zerolog.ConsoleWriter{
 			Out:        os.Stderr,
 			TimeFormat: "15:04:05",
-			NoColor:    !debugMode, // force color only when DEBUG=true
+			NoColor:    false,
 		}
-		writers = append(writers, &consoleWriter)
+		switch strings.ToLower(strings.TrimSpace(getEnv("LOG_CONSOLE_OUTPUT", "full"))) {
+		case "minimal":
+			// time, level, message only (no caller), hide env/service/ids
+			cw.PartsOrder = []string{
+				zerolog.TimestampFieldName,
+				zerolog.LevelFieldName,
+				zerolog.MessageFieldName,
+			}
+			cw.FieldsExclude = []string{"service", "env", "trace_id", "span_id", "request_id"}
+		case "extended":
+			// time, level, caller, message, and all fields (no excludes)
+			cw.PartsOrder = []string{
+				zerolog.TimestampFieldName,
+				zerolog.LevelFieldName,
+				zerolog.CallerFieldName,
+				zerolog.MessageFieldName,
+			}
+			// no excludes
+		case "full":
+			fallthrough
+		default:
+			// time, level, caller, message; hide env/service/ids; keep other fields
+			cw.PartsOrder = []string{
+				zerolog.TimestampFieldName,
+				zerolog.LevelFieldName,
+				zerolog.CallerFieldName,
+				zerolog.MessageFieldName,
+			}
+			cw.FieldsExclude = []string{"service", "env", "trace_id", "span_id", "request_id"}
+		}
+		consoleDest = &levelDest{w: &cw, min: consoleLevel}
 	}
 
-	multi := zerolog.MultiLevelWriter(writers...)
+	// Splitter for per-destination levels
+	var w zerolog.LevelWriter = splitLevelWriter{a: fileDest}
+	if consoleDest != nil {
+		w = splitLevelWriter{a: fileDest, b: *consoleDest}
+	}
 
-	// Build base logger (optional sampling)
-	logger := zerolog.New(multi)
+	// Base logger uses lowest level so writer filters decide
+	minLevel := fileLevel
+	if consoleDest != nil && consoleDest.min < minLevel {
+		minLevel = consoleDest.min
+	}
+
+	logger := zerolog.New(w)
 	if n := getEnvInt("LOG_SAMPLING_N", 1); n > 1 {
-		// zerolog v1.34.0 expects uint32 for N
 		logger = logger.Sample(&zerolog.BasicSampler{N: uint32(n)})
 	}
 
-	// Base fields (NOTE: no caller here; we set caller per-event)
-	service := getEnv("SERVICE_NAME", defaultServiceName())
-	envVal := env
-
 	log.Logger = logger.
-		Level(logLevel).
+		Level(minLevel).
 		With().
 		Timestamp().
 		Str("service", service).
-		Str("env", envVal).
+		Str("env", logEnv).
 		Logger()
 }
 
-// ---------- Rotator ----------
+// ----- splitLevelWriter: fan-out with per-destination min levels -----
 
-func (rl *RotatingLogger) Rotate() error {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	if err := rl.Logger.Rotate(); err != nil {
-		return err
-	}
-
-	rl.index++
-	rl.Filename = filepath.Join(
-		filepath.Dir(rl.Filename),
-		fmt.Sprintf("%s_%02d.log", rl.baseName, rl.index),
-	)
-
-	return nil
+type levelDest struct {
+	w   io.Writer
+	min zerolog.Level
 }
 
-func (rl *RotatingLogger) Write(p []byte) (n int, err error) {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	return rl.Logger.Write(p)
+type splitLevelWriter struct {
+	a levelDest
+	b levelDest // optional; zero value means disabled
+}
+
+func (s splitLevelWriter) Write(p []byte) (int, error) {
+	if s.a.w != nil {
+		_, _ = s.a.w.Write(p)
+	}
+	if s.b.w != nil {
+		_, _ = s.b.w.Write(p)
+	}
+	return len(p), nil
+}
+
+func (s splitLevelWriter) WriteLevel(level zerolog.Level, p []byte) (int, error) {
+	if s.a.w != nil && level >= s.a.min {
+		_, _ = s.a.w.Write(p)
+	}
+	if s.b.w != nil && level >= s.b.min {
+		_, _ = s.b.w.Write(p)
+	}
+	return len(p), nil
 }
 
 // ---------- Public API ----------
@@ -192,32 +244,38 @@ func (rl *RotatingLogger) Write(p []byte) (n int, err error) {
 func (l *Logger) Shutdown() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-
 	if l.rotator != nil {
 		_ = l.rotator.Close()
 	}
 }
 
-func (l *Logger) GetCurrentLogFile() string {
-	return l.rotator.Filename
-}
+func (l *Logger) GetCurrentLogFile() string { return l.rotator.Filename }
 
+func (l *Logger) Trace(args ...interface{}) { l.logEvent(zerolog.TraceLevel, args...) }
+func (l *Logger) Debug(args ...interface{}) { l.logEvent(zerolog.DebugLevel, args...) }
 func (l *Logger) Info(args ...interface{})  { l.logEvent(zerolog.InfoLevel, args...) }
 func (l *Logger) Warn(args ...interface{})  { l.logEvent(zerolog.WarnLevel, args...) }
 func (l *Logger) Error(args ...interface{}) { l.logEvent(zerolog.ErrorLevel, args...) }
-func (l *Logger) Debug(args ...interface{}) { l.logEvent(zerolog.DebugLevel, args...) }
 
-// Context-aware variants (attach request/trace/span IDs if present).
-func (l *Logger) InfoCtx(ctx context.Context, args ...interface{})  { l.logEventCtx(ctx, zerolog.InfoLevel, args...) }
-func (l *Logger) WarnCtx(ctx context.Context, args ...interface{})  { l.logEventCtx(ctx, zerolog.WarnLevel, args...) }
-func (l *Logger) ErrorCtx(ctx context.Context, args ...interface{}) { l.logEventCtx(ctx, zerolog.ErrorLevel, args...) }
-func (l *Logger) DebugCtx(ctx context.Context, args ...interface{}) { l.logEventCtx(ctx, zerolog.DebugLevel, args...) }
+func (l *Logger) TraceCtx(ctx context.Context, args ...interface{}) {
+	l.logEventCtx(ctx, zerolog.TraceLevel, args...)
+}
+func (l *Logger) DebugCtx(ctx context.Context, args ...interface{}) {
+	l.logEventCtx(ctx, zerolog.DebugLevel, args...)
+}
+func (l *Logger) InfoCtx(ctx context.Context, args ...interface{}) {
+	l.logEventCtx(ctx, zerolog.InfoLevel, args...)
+}
+func (l *Logger) WarnCtx(ctx context.Context, args ...interface{}) {
+	l.logEventCtx(ctx, zerolog.WarnLevel, args...)
+}
+func (l *Logger) ErrorCtx(ctx context.Context, args ...interface{}) {
+	l.logEventCtx(ctx, zerolog.ErrorLevel, args...)
+}
 
 // Fatal logs an error, includes a stack trace in development, and exits.
-// pass FatalError{Code:N} in args; otherwise defaults to 1.
 func (l *Logger) Fatal(args ...interface{}) {
 	message, fields, errVal := processLogArgs(args)
-
 	if l.consoleOut {
 		fields["stack"] = string(debug.Stack())
 	}
@@ -230,7 +288,6 @@ func (l *Logger) Fatal(args ...interface{}) {
 	if errVal != nil {
 		ev = ev.Err(errVal)
 	}
-
 	if message != "" {
 		ev.Msg(message)
 	} else {
@@ -248,11 +305,12 @@ func (l *Logger) Fatal(args ...interface{}) {
 	os.Exit(code)
 }
 
-// FatalCode is a convenience to exit with a specific code.
 func FatalCode(code int, args ...interface{}) {
 	args = append(args, FatalError{Code: code})
 	ensure().Fatal(args...)
 }
+
+func Fatal(args ...interface{}) { ensure().Fatal(args...) }
 
 // ---------- Internals ----------
 
@@ -261,7 +319,6 @@ func (l *Logger) logEvent(level zerolog.Level, args ...interface{}) {
 	if c := userCaller(); c != "" {
 		ev = ev.Str("caller", c)
 	}
-
 	message, fields, errVal := processLogArgs(args)
 	for k, v := range fields {
 		ev = ev.Interface(k, v)
@@ -269,7 +326,6 @@ func (l *Logger) logEvent(level zerolog.Level, args ...interface{}) {
 	if errVal != nil {
 		ev = ev.Err(errVal)
 	}
-
 	if message != "" {
 		ev.Msg(message)
 	} else {
@@ -278,7 +334,6 @@ func (l *Logger) logEvent(level zerolog.Level, args ...interface{}) {
 }
 
 func (l *Logger) logEventCtx(ctx context.Context, level zerolog.Level, args ...interface{}) {
-	// Attach correlation IDs from context.
 	e := log.Logger.With()
 	if v, _ := ctx.Value(CtxRequestID).(string); v != "" {
 		e = e.Str("request_id", v)
@@ -295,7 +350,6 @@ func (l *Logger) logEventCtx(ctx context.Context, level zerolog.Level, args ...i
 	if c := userCaller(); c != "" {
 		ev = ev.Str("caller", c)
 	}
-
 	message, fields, errVal := processLogArgs(args)
 	for k, v := range fields {
 		ev = ev.Interface(k, v)
@@ -303,7 +357,6 @@ func (l *Logger) logEventCtx(ctx context.Context, level zerolog.Level, args ...i
 	if errVal != nil {
 		ev = ev.Err(errVal)
 	}
-
 	if message != "" {
 		ev.Msg(message)
 	} else {
@@ -315,17 +368,15 @@ func processLogArgs(args []interface{}) (string, map[string]interface{}, error) 
 	var message string
 	fields := make(map[string]interface{})
 	var errVal error
-
 	for _, arg := range args {
 		switch v := arg.(type) {
 		case string:
-			message = v // last string wins
+			message = v
 		case error:
 			errVal = v
 		case map[string]interface{}:
 			mergeMap(fields, v)
 		case fmt.Stringer:
-			// Helpful for types that implement String()
 			if message == "" {
 				message = v.String()
 			} else {
@@ -335,7 +386,6 @@ func processLogArgs(args []interface{}) (string, map[string]interface{}, error) 
 			mergeStruct(fields, v)
 		}
 	}
-
 	return message, fields, errVal
 }
 
@@ -357,14 +407,13 @@ func mergeStruct(target map[string]interface{}, obj interface{}) {
 		rv = rv.Elem()
 	}
 	if rv.Kind() != reflect.Struct {
-		// Fallback to raw value for non-structs
 		target["value"] = obj
 		return
 	}
 	rt := rv.Type()
 	for i := 0; i < rv.NumField(); i++ {
 		f := rt.Field(i)
-		if f.PkgPath != "" { // unexported
+		if f.PkgPath != "" {
 			continue
 		}
 		target[f.Name] = rv.Field(i).Interface()
@@ -397,7 +446,6 @@ func isThisPackageFrame(pc uintptr, file string) bool {
 			return true
 		}
 	}
-	// Fallback: check file path
 	p := strings.ToLower(filepath.ToSlash(file))
 	return strings.Contains(p, "/prezerolog/")
 }
@@ -413,18 +461,20 @@ func ensure() *Logger {
 }
 
 // Simple variants
+func Trace(args ...interface{}) { ensure().Trace(args...) }
+func Debug(args ...interface{}) { ensure().Debug(args...) }
 func Info(args ...interface{})  { ensure().Info(args...) }
 func Warn(args ...interface{})  { ensure().Warn(args...) }
 func Error(args ...interface{}) { ensure().Error(args...) }
-func Debug(args ...interface{}) { ensure().Debug(args...) }
 
 // Context-aware variants
+func TraceCtx(ctx context.Context, args ...interface{}) { ensure().TraceCtx(ctx, args...) }
+func DebugCtx(ctx context.Context, args ...interface{}) { ensure().DebugCtx(ctx, args...) }
 func InfoCtx(ctx context.Context, args ...interface{})  { ensure().InfoCtx(ctx, args...) }
 func WarnCtx(ctx context.Context, args ...interface{})  { ensure().WarnCtx(ctx, args...) }
 func ErrorCtx(ctx context.Context, args ...interface{}) { ensure().ErrorCtx(ctx, args...) }
-func DebugCtx(ctx context.Context, args ...interface{}) { ensure().DebugCtx(ctx, args...) }
 
-// ---------- Small helpers ----------
+// ---------- Helpers functions ----------
 
 func getEnv(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
@@ -442,21 +492,64 @@ func getEnvInt(key string, def int) int {
 	return def
 }
 
+func getEnvBool(key string, def bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if v == "" {
+		return def
+	}
+	switch v {
+	case "1", "t", "true", "y", "yes", "on":
+		return true
+	case "0", "f", "false", "n", "no", "off":
+		return false
+	default:
+		return def
+	}
+}
+
+func parseLevel(s string) zerolog.Level {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "trace":
+		return zerolog.TraceLevel
+	case "debug":
+		return zerolog.DebugLevel
+	case "info", "":
+		return zerolog.InfoLevel
+	case "warn", "warning":
+		return zerolog.WarnLevel
+	case "error":
+		return zerolog.ErrorLevel
+	case "fatal":
+		return zerolog.FatalLevel
+	case "panic":
+		return zerolog.PanicLevel
+	default:
+		return zerolog.NoLevel
+	}
+}
+
 func defaultServiceName() string {
+	if bi, ok := debug.ReadBuildInfo(); ok && bi != nil && bi.Main.Path != "" {
+		if last := filepath.Base(bi.Main.Path); last != "" && last != "." && last != "/" {
+			return last
+		}
+	}
+	if cwd, err := os.Getwd(); err == nil && cwd != "" {
+		if base := filepath.Base(cwd); base != "" {
+			return base
+		}
+	}
 	if len(os.Args) > 0 {
 		return filepath.Base(os.Args[0])
 	}
 	return "app"
 }
 
-// sanitizeServiceName makes SERVICE_NAME safe to use in filenames.
 func sanitizeServiceName(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
-	// Replace spaces and path separators with '-'
 	s = strings.ReplaceAll(s, " ", "-")
 	s = strings.ReplaceAll(s, "/", "-")
 	s = strings.ReplaceAll(s, "\\", "-")
-	// Keep [a-z0-9._-]; replace others with '-'
 	var b strings.Builder
 	for _, r := range s {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {

@@ -5,9 +5,6 @@
 [![Release](https://img.shields.io/github/v/release/renegadevi/prezerolog)](https://github.com/renegadevi/prezerolog/releases)
 
 
-
-
-
 A logging wrapper around [zerolog](https://github.com/rs/zerolog) with:
 - JSON logs to rotated files
 - Colored console output in development/DEBUG
@@ -15,11 +12,6 @@ A logging wrapper around [zerolog](https://github.com/rs/zerolog) with:
 - RFC3339Nano timestamps (UTC)
 - Context-aware correlation IDs
 - Minimal API for consistency across services
-
-## Screenshot
-
-![screenshot](https://raw.githubusercontent.com/renegadevi/prezerolog/main/.github/screenshot.png)
-
 
 ## Install
 ```bash
@@ -31,29 +23,33 @@ go get github.com/renegadevi/prezerolog
 package main
 
 import (
-  "context"
-  log "github.com/renegadevi/prezerolog"
+	"context"
+	"errors"
+
+	log "github.com/renegadevi/prezerolog"
 )
 
 func main() {
-  // One-liner init (loads .env if present, sets up rotation & console)
-  log.InitLogging()
+	// Initialize logging (loads .env if present, sets up rotation & console)
+	log.InitLogging()
 
-  // Plain
-  log.Info("service starting")
+	// Logging exmaples (check example file for more)
+	log.Info("Logging initialized")
+	log.Warn("This is a warning message")
+	log.Error("This is an error message", errors.New("example error"))
+	log.Trace("This is a trace message", map[string]any{"key": "value"})
+	log.Debug("This is a debug message", map[string]any{"debug": true})
 
-  // Structured
-  log.Info("login", map[string]any{"user":"alice", "role":"admin"})
-
-  // With context (request/trace/span IDs)
-  ctx := context.Background()
-  ctx = context.WithValue(ctx, log.CtxRequestID, "req-7c1b")
-  ctx = context.WithValue(ctx, log.CtxTraceID,   "tr-9a22")
-  ctx = context.WithValue(ctx, log.CtxSpanID,    "sp-001")
-
-  log.InfoCtx(ctx, "db connected", map[string]any{"dsn":"postgres://..."})
 }
+
 ```
+
+
+## Screenshots
+
+![screenshot-env](https://raw.githubusercontent.com/renegadevi/prezerolog/main/.github/screenshot-env.png)
+![screenshot-json](https://raw.githubusercontent.com/renegadevi/prezerolog/main/.github/screenshot-json.png)
+
 
 ## Log files & rotation
 
@@ -113,35 +109,22 @@ Errors passed as `error` args are logged under `err`.
 
 ## Environment variables
 ```ini
-# When true: console pretty/color output is enabled
-DEBUG=true
-
-# Application environment: development | production
-APP_ENV=development
-
-# Logical service name shown in records (defaults to the binary name if unset).
-SERVICE_NAME=my-service
-
-# Directory where rotated JSON log files are written.
-LOG_DIR=logs
-
-# Max log file size in MB before rotation.
-LOG_ROTATE_MAX_SIZE=100
-
-# How many rotated files to keep.
-LOG_ROTATE_MAX_BACKUPS=7
-
-# Optional sampling (1 = no sampling; N>1 logs roughly 1 of every N records).
-LOG_SAMPLING_N=1
+LOG_DIR=<folder name>		           		    # (default: "logs")
+LOG_NAME=<service name> 		           	  # (default: current dir)
+LOG_ENV=production|development            # (default: production)
+LOG_CONSOLE=true|false                    # (default: true)
+LOG_CONSOLE_LEVEL=trace|debug|info|warn   # (default: info)
+LOG_FILE_LEVEL=trace|debug|info|warn      # (default: info)
+LOG_CONSOLE_OUTPUT=minimal|full|extended  # (default: full)
+LOG_SAMPLING_N=1                          # (default: 1)
+LOG_ROTATE_MAX_SIZE=100                   # (default: 100)
+LOG_ROTATE_MAX_BACKUPS=7                  # (default: 7)
 ```
 
 ## Example of Fatal error messages.
 ```go
 // Generic failure (defaults to 1)
 log.Fatal("unrecoverable error", err)
-
-// Specific exit code (sysexits-style, etc.)
-log.FatalCode(78, "config load failed", err)
 ```
 
 
