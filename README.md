@@ -48,7 +48,7 @@ func main() {
 ## Screenshots
 
 ![screenshot-env](https://raw.githubusercontent.com/renegadevi/prezerolog/main/.github/screenshot-env.png)
-![screenshot-json](https://raw.githubusercontent.com/renegadevi/prezerolog/main/.github/screenshot-json.png)
+![screenshot-json](https://raw.githubusercontent.com/renegadevi/prezerolog/main/.github/screenshot-json-stdout.png)
 ![screenshot-file](https://raw.githubusercontent.com/renegadevi/prezerolog/main/.github/screenshot-file.png)
 
 
