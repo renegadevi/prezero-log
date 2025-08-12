@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.0 - 2025-08-12
+- Added JSON to stdout using LOG_CONSOLE_OUTPUT=json
+- Added LOG_FILE=false to disable file logging
+- Added json example (`examples/json/main.go`)
+
 ## v0.3.0 - 2025-08-11
 - Updated environmental variables to be specific to LOG_
 - Updated example demo code

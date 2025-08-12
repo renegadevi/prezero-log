@@ -13,16 +13,17 @@
 // License: MIT - 2025 Philip Andersen
 //
 // Env keys:
-// LOG_DIR=<folder name>		           		(default: "logs")
-// LOG_NAME=<service name> 		           		(default: current dir)
-// LOG_ENV=production|development          		(default: production)
-// LOG_CONSOLE=true|false                  		(default: true)
-// LOG_CONSOLE_LEVEL=trace|debug|info|warn 		(default: info)
-// LOG_FILE_LEVEL=trace|debug|info|warn    		(default: info)
-// LOG_CONSOLE_OUTPUT=minimal|full|extended		(default: full)
-// LOG_SAMPLING_N=1                        		(default: 1)
-// LOG_ROTATE_MAX_SIZE=100                 		(default: 100)
-// LOG_ROTATE_MAX_BACKUPS=7                		(default: 7)
+// LOG_DIR=<folder name>                         (default: "logs")
+// LOG_NAME=<service name>                       (default: current dir)
+// LOG_ENV=production|development                (default: production)
+// LOG_FILE=true|false                           (default: true)
+// LOG_CONSOLE=true|false                        (default: true)
+// LOG_CONSOLE_LEVEL=trace|debug|info|warn       (default: info)
+// LOG_FILE_LEVEL=trace|debug|info|warn          (default: info)
+// LOG_CONSOLE_OUTPUT=minimal|full|extended|json (default: full)
+// LOG_SAMPLING_N=1                              (default: 1)
+// LOG_ROTATE_MAX_SIZE=100                       (default: 100)
+// LOG_ROTATE_MAX_BACKUPS=7                      (default: 7)
 
 package prezerolog
 
@@ -81,6 +82,8 @@ func InitLogging() {
 
 	logDir := getEnv("LOG_DIR", "logs")
 	logEnv := getEnv("LOG_ENV", getEnv("APP_ENV", "production"))
+
+	fileEnabled := getEnvBool("LOG_FILE", true)
 	consoleEnabled := getEnvBool("LOG_CONSOLE", true)
 
 	consoleLevel := parseLevel(getEnv("LOG_CONSOLE_LEVEL", "info"))
@@ -92,8 +95,12 @@ func InitLogging() {
 		fileLevel = zerolog.InfoLevel
 	}
 
-	rotator := NewRotatingLogger(logDir)
-	configureZerolog(rotator, logEnv, consoleEnabled, consoleLevel, fileLevel)
+	var rotator *RotatingLogger
+	if fileEnabled {
+		rotator = NewRotatingLogger(logDir)
+	}
+
+	configureZerolog(rotator, logEnv, fileEnabled, consoleEnabled, consoleLevel, fileLevel)
 
 	AppLogger = &Logger{
 		rotator:    rotator,
@@ -120,8 +127,8 @@ func NewRotatingLogger(logDir string) *RotatingLogger {
 	}
 }
 
-// configureZerolog builds the base logger with JSON-to-file and optional pretty console.
-func configureZerolog(rotator *RotatingLogger, logEnv string, consoleEnabled bool, consoleLevel, fileLevel zerolog.Level) {
+// configureZerolog builds the base logger with JSON-to-file and optional console.
+func configureZerolog(rotator *RotatingLogger, logEnv string, fileEnabled, consoleEnabled bool, consoleLevel, fileLevel zerolog.Level) {
 	// Normalize keys and time
 	zerolog.TimestampFieldName = "time"
 	zerolog.LevelFieldName = "level"
@@ -137,39 +144,57 @@ func configureZerolog(rotator *RotatingLogger, logEnv string, consoleEnabled boo
 
 	service := getEnv("LOG_NAME", defaultServiceName())
 
-	// JSON file destination (always included)
-	fileDest := levelDest{w: rotator, min: fileLevel}
+	// Build destinations (0..N)
+	var dests []levelDest
 
-	// Optional console destination
-	var consoleDest *levelDest
+	// JSON file destination (optional)
+	if fileEnabled && rotator != nil {
+		dests = append(dests, levelDest{w: rotator, min: fileLevel})
+	}
+
+	// Console destination
 	if consoleEnabled {
-		cw := zerolog.ConsoleWriter{
-			Out:        os.Stderr,
-			TimeFormat: "15:04:05",
-			NoColor:    false,
-		}
 		switch strings.ToLower(strings.TrimSpace(getEnv("LOG_CONSOLE_OUTPUT", "full"))) {
+		case "json":
+			// Raw JSON to stdout (for containers/collectors)
+			dests = append(dests, levelDest{w: os.Stdout, min: consoleLevel})
 		case "minimal":
 			// time, level, message only (no caller), hide env/service/ids
+			cw := zerolog.ConsoleWriter{
+				Out:        os.Stderr,
+				TimeFormat: "15:04:05",
+				NoColor:    false,
+			}
 			cw.PartsOrder = []string{
 				zerolog.TimestampFieldName,
 				zerolog.LevelFieldName,
 				zerolog.MessageFieldName,
 			}
 			cw.FieldsExclude = []string{"service", "env", "trace_id", "span_id", "request_id"}
+			dests = append(dests, levelDest{w: &cw, min: consoleLevel})
 		case "extended":
 			// time, level, caller, message, and all fields (no excludes)
+			cw := zerolog.ConsoleWriter{
+				Out:        os.Stderr,
+				TimeFormat: "15:04:05",
+				NoColor:    false,
+			}
 			cw.PartsOrder = []string{
 				zerolog.TimestampFieldName,
 				zerolog.LevelFieldName,
 				zerolog.CallerFieldName,
 				zerolog.MessageFieldName,
 			}
-			// no excludes
+			dests = append(dests, levelDest{w: &cw, min: consoleLevel})
 		case "full":
 			fallthrough
 		default:
 			// time, level, caller, message; hide env/service/ids; keep other fields
+			cw := zerolog.ConsoleWriter{
+				Out:        os.Stderr,
+				TimeFormat: "15:04:05",
+				NoColor:    false,
+			}
 			cw.PartsOrder = []string{
 				zerolog.TimestampFieldName,
 				zerolog.LevelFieldName,
@@ -177,20 +202,24 @@ func configureZerolog(rotator *RotatingLogger, logEnv string, consoleEnabled boo
 				zerolog.MessageFieldName,
 			}
 			cw.FieldsExclude = []string{"service", "env", "trace_id", "span_id", "request_id"}
+			dests = append(dests, levelDest{w: &cw, min: consoleLevel})
 		}
-		consoleDest = &levelDest{w: &cw, min: consoleLevel}
 	}
 
-	// Splitter for per-destination levels
-	var w zerolog.LevelWriter = splitLevelWriter{a: fileDest}
-	if consoleDest != nil {
-		w = splitLevelWriter{a: fileDest, b: *consoleDest}
+	// Safety fallback: if nothing enabled, write JSON to stdout at info
+	if len(dests) == 0 {
+		dests = append(dests, levelDest{w: os.Stdout, min: zerolog.InfoLevel})
 	}
 
-	// Base logger uses lowest level so writer filters decide
-	minLevel := fileLevel
-	if consoleDest != nil && consoleDest.min < minLevel {
-		minLevel = consoleDest.min
+	// Multi-destination writer
+	w := multiLevelWriter{dests: dests}
+
+	// Base logger uses lowest destination level so writers can filter independently
+	minLevel := dests[0].min
+	for _, d := range dests[1:] {
+		if d.min < minLevel {
+			minLevel = d.min
+		}
 	}
 
 	logger := zerolog.New(w)
@@ -207,34 +236,31 @@ func configureZerolog(rotator *RotatingLogger, logEnv string, consoleEnabled boo
 		Logger()
 }
 
-// ----- splitLevelWriter: fan-out with per-destination min levels -----
+// ----- multiLevelWriter: fan-out with per-destination min levels -----
 
 type levelDest struct {
 	w   io.Writer
 	min zerolog.Level
 }
 
-type splitLevelWriter struct {
-	a levelDest
-	b levelDest // optional; zero value means disabled
+type multiLevelWriter struct {
+	dests []levelDest
 }
 
-func (s splitLevelWriter) Write(p []byte) (int, error) {
-	if s.a.w != nil {
-		_, _ = s.a.w.Write(p)
-	}
-	if s.b.w != nil {
-		_, _ = s.b.w.Write(p)
+func (m multiLevelWriter) Write(p []byte) (int, error) {
+	for _, d := range m.dests {
+		if d.w != nil {
+			_, _ = d.w.Write(p)
+		}
 	}
 	return len(p), nil
 }
 
-func (s splitLevelWriter) WriteLevel(level zerolog.Level, p []byte) (int, error) {
-	if s.a.w != nil && level >= s.a.min {
-		_, _ = s.a.w.Write(p)
-	}
-	if s.b.w != nil && level >= s.b.min {
-		_, _ = s.b.w.Write(p)
+func (m multiLevelWriter) WriteLevel(level zerolog.Level, p []byte) (int, error) {
+	for _, d := range m.dests {
+		if d.w != nil && level >= d.min {
+			_, _ = d.w.Write(p)
+		}
 	}
 	return len(p), nil
 }
@@ -249,7 +275,12 @@ func (l *Logger) Shutdown() {
 	}
 }
 
-func (l *Logger) GetCurrentLogFile() string { return l.rotator.Filename }
+func (l *Logger) GetCurrentLogFile() string {
+	if l.rotator == nil || l.rotator.Logger == nil {
+		return ""
+	}
+	return l.rotator.Filename
+}
 
 func (l *Logger) Trace(args ...interface{}) { l.logEvent(zerolog.TraceLevel, args...) }
 func (l *Logger) Debug(args ...interface{}) { l.logEvent(zerolog.DebugLevel, args...) }

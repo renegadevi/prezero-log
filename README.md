@@ -6,7 +6,7 @@
 
 
 A logging wrapper around [zerolog](https://github.com/rs/zerolog) with:
-- JSON logs to rotated files
+- JSON logs to rotated files (optional to STDOUT for use to ingest)
 - Colored console output in development/DEBUG
 - Normalized keys: `time, level, msg, service, env, trace_id, span_id, request_id, caller, err`
 - RFC3339Nano timestamps (UTC)
@@ -49,6 +49,7 @@ func main() {
 
 ![screenshot-env](https://raw.githubusercontent.com/renegadevi/prezerolog/main/.github/screenshot-env.png)
 ![screenshot-json](https://raw.githubusercontent.com/renegadevi/prezerolog/main/.github/screenshot-json.png)
+![screenshot-file](https://raw.githubusercontent.com/renegadevi/prezerolog/main/.github/screenshot-file.png)
 
 
 ## Log files & rotation
@@ -109,16 +110,17 @@ Errors passed as `error` args are logged under `err`.
 
 ## Environment variables
 ```ini
-LOG_DIR=<folder name>		           		    # (default: "logs")
-LOG_NAME=<service name> 		           	  # (default: current dir)
-LOG_ENV=production|development            # (default: production)
-LOG_CONSOLE=true|false                    # (default: true)
-LOG_CONSOLE_LEVEL=trace|debug|info|warn   # (default: info)
-LOG_FILE_LEVEL=trace|debug|info|warn      # (default: info)
-LOG_CONSOLE_OUTPUT=minimal|full|extended  # (default: full)
-LOG_SAMPLING_N=1                          # (default: 1)
-LOG_ROTATE_MAX_SIZE=100                   # (default: 100)
-LOG_ROTATE_MAX_BACKUPS=7                  # (default: 7)
+LOG_DIR=<folder name>                          # (default: "logs")
+LOG_NAME=<service name>                        # (default: current dir)
+LOG_ENV=production|development                 # (default: production)
+LOG_FILE=true|false                            # (default: true)
+LOG_CONSOLE=true|false                         # (default: true)
+LOG_CONSOLE_LEVEL=trace|debug|info|warn        # (default: info)
+LOG_FILE_LEVEL=trace|debug|info|warn           # (default: info)
+LOG_CONSOLE_OUTPUT=minimal|full|extended|json  # (default: full)
+LOG_SAMPLING_N=1                               # (default: 1)
+LOG_ROTATE_MAX_SIZE=100                        # (default: 100)
+LOG_ROTATE_MAX_BACKUPS=7                       # (default: 7)
 ```
 
 ## Example of Fatal error messages.
